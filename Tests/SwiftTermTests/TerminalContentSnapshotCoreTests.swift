@@ -127,6 +127,43 @@ struct TerminalContentSnapshotCoreTests {
         #expect(bounded.capturedRange.lowerBound > 0)
     }
 
+    @Test func cellsCarryTheirOSC133Role() throws {
+        let fixture = Fixture()
+        fixture.feed("out\r\n\u{1b}]133;A\u{07}$ \u{1b}]133;B\u{07}ls")
+        let rows = fixture.terminal.contentSnapshot(region: .viewport).rows
+        #expect(rows[0].cells.prefix(3).map(\.semanticContent) == [.none, .none, .none])
+        #expect(rows[1].cells.prefix(4).map(\.semanticContent)
+            == [.prompt(.initial), .prompt(.initial), .input, .input])
+    }
+
+    @Test func cursorLineCopiesTheCursorsRowAndTheRowsItWrappedFrom() throws {
+        let fixture = Fixture()
+        // 12 columns: "abc", then 30 characters wrapped over three rows.
+        fixture.feed("abc\r\n" + String(repeating: "x", count: 30))
+        let whole = fixture.terminal.contentSnapshot(region: .cursorLine(maximumRows: 16))
+        #expect(whole.rows.count == 3)
+        #expect(whole.rows.map(\.isWrapped) == [false, true, true])
+        #expect(whole.rows.last?.absoluteRow == whole.cursor.row)
+        #expect(whole.cursor.col == 6)
+        #expect(whole.capturedRange == whole.rows.first!.absoluteRow..<whole.cursor.row + 1)
+
+        let capped = fixture.terminal.contentSnapshot(region: .cursorLine(maximumRows: 2))
+        #expect(capped.rows.count == 2)
+        #expect(capped.rows.last?.absoluteRow == capped.cursor.row)
+
+        let one = fixture.terminal.contentSnapshot(region: .cursorLine(maximumRows: 0))
+        #expect(one.rows.count == 1)
+        #expect(one.rows.first?.text == "xxxxxx")
+    }
+
+    @Test func cursorLineFollowsTheCursorOffTheBottomRow() throws {
+        let fixture = Fixture()
+        fixture.feed("one\r\ntwo\r\nthree\u{1b}[2;2H")
+        let snapshot = fixture.terminal.contentSnapshot(region: .cursorLine(maximumRows: 16))
+        #expect(snapshot.rows.map(\.text) == ["two"])
+        #expect(snapshot.cursor == Position(col: 1, row: snapshot.rows[0].absoluteRow))
+    }
+
     @Test func valueTypesAreCheckedSendable() {
         func requireSendable<T: Sendable>(_: T.Type) {}
         requireSendable(TerminalDimensions.self)

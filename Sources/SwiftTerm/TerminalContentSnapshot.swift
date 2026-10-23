@@ -54,6 +54,10 @@ public enum TerminalContentRegion: Sendable, Equatable {
     /// The live screen and up to this many preceding scrollback rows.
     /// Negative values request only the live screen.
     case history(maximumScrollbackRows: Int)
+    /// The row holding the cursor and the rows it soft-wrapped from, top first,
+    /// at most this many in all. Fewer than one copies the cursor's row alone.
+    /// Read from the live screen whatever the scroll position.
+    case cursorLine(maximumRows: Int)
 }
 
 /// A cell value with its complete text, independent of terminal storage.
@@ -61,11 +65,17 @@ public struct TerminalCellSnapshot: Sendable, Equatable {
     public let text: String
     public let width: Int
     public let attribute: Attribute
+    /// The OSC 133 role the shell gave this cell: prompt, input, output or none.
+    public let semanticContent: SemanticContent
 
-    public init(text: String, width: Int, attribute: Attribute) {
+    public init(
+        text: String, width: Int, attribute: Attribute,
+        semanticContent: SemanticContent = .none
+    ) {
         self.text = text
         self.width = width
         self.attribute = attribute
+        self.semanticContent = semanticContent
     }
 }
 
@@ -108,17 +118,22 @@ public struct TerminalContentSnapshot: Sendable, Equatable {
     public let capturedRange: Range<Int>
     public let liveTopRow: Int
     public let rows: [TerminalContentRowSnapshot]
+    /// The cursor: its column, and its row in the same scroll-invariant
+    /// coordinates as `TerminalContentRowSnapshot.absoluteRow`.
+    public let cursor: Position
 
     public init(
         inputState: TerminalInputStateSnapshot,
         capturedRange: Range<Int>,
         liveTopRow: Int,
-        rows: [TerminalContentRowSnapshot]
+        rows: [TerminalContentRowSnapshot],
+        cursor: Position = Position(col: 0, row: 0)
     ) {
         self.inputState = inputState
         self.capturedRange = capturedRange
         self.liveTopRow = liveTopRow
         self.rows = rows
+        self.cursor = cursor
     }
 }
 
@@ -169,6 +184,14 @@ extension Terminal {
         case .history(let maximumScrollbackRows):
             start = liveStart - min(max(0, maximumScrollbackRows), liveStart)
             end = count
+        case .cursorLine(let maximumRows):
+            let cursorRow = min(max(0, source.yBase + source.y), count - 1)
+            var top = cursorRow
+            while cursorRow - top + 1 < maximumRows, top > 0, source.lines[top].isWrapped {
+                top -= 1
+            }
+            start = max(0, top)
+            end = count == 0 ? 0 : cursorRow + 1
         }
         let copiedRows = (start..<end).map { index in
             let line = source.lines[index]
@@ -178,7 +201,8 @@ extension Terminal {
                 return TerminalCellSnapshot(
                     text: cell.getText(),
                     width: Int(cell.width),
-                    attribute: cell.attribute)
+                    attribute: cell.attribute,
+                    semanticContent: cell.semanticContent)
             }
             return TerminalContentRowSnapshot(
                 absoluteRow: source.linesTop + index,
@@ -189,7 +213,8 @@ extension Terminal {
             inputState: inputStateSnapshotLocked(),
             capturedRange: (source.linesTop + start)..<(source.linesTop + end),
             liveTopRow: source.linesTop + liveStart,
-            rows: copiedRows)
+            rows: copiedRows,
+            cursor: Position(col: source.x, row: source.linesTop + source.yBase + source.y))
     }
 
     /// Copies a bounded region and its input state under one terminal lock.
